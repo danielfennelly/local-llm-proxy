@@ -1,0 +1,77 @@
+name: local-llm-proxy
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: on-failure
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: postgres
+      POSTGRES_MULTIPLE_DATABASES: litellm,langfuse
+    networks:
+      - llm-proxy-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "${DB_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - llm-proxy-db:/var/lib/postgresql/data
+      - ./init_dbs:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+
+  langfuse-server:
+    image: langfuse/langfuse:2
+    depends_on:
+      db:
+        condition: service_healthy
+        restart: true
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/langfuse
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET}
+      - SALT=${LANGFUSE_SALT}
+      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY}
+      - NEXTAUTH_URL=http://localhost:3000
+      - TELEMETRY_ENABLED=${TELEMETRY_ENABLED:-false}
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-false}
+      - LANGFUSE_INIT_ORG_ID=${LANGFUSE_INIT_ORG_ID:-}
+      - LANGFUSE_INIT_ORG_NAME=${LANGFUSE_INIT_ORG_NAME:-}
+      - LANGFUSE_INIT_PROJECT_ID=${LANGFUSE_INIT_PROJECT_ID:-}
+      - LANGFUSE_INIT_PROJECT_NAME=${LANGFUSE_INIT_PROJECT_NAME:-}
+      - LANGFUSE_INIT_PROJECT_PUBLIC_KEY=${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-}
+      - LANGFUSE_INIT_PROJECT_SECRET_KEY=${LANGFUSE_INIT_PROJECT_SECRET_KEY:-}
+      - LANGFUSE_INIT_USER_EMAIL=${LANGFUSE_INIT_USER_EMAIL:-}
+      - LANGFUSE_INIT_USER_NAME=${LANGFUSE_INIT_USER_NAME:-}
+      - LANGFUSE_INIT_USER_PASSWORD=${LANGFUSE_INIT_USER_PASSWORD:-}
+    networks:
+      - llm-proxy-network
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: [ "--config", "/app/config.yaml", "--port", "4000", "--debug"]
+    env_file: ".env"
+    environment:
+      DATABASE_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/litellm"
+      LANGFUSE_HOST: "http://langfuse-server:3000"
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY}
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+        restart: true
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    networks:
+      - llm-proxy-network
+
+volumes:
+  llm-proxy-db:
+
+networks:
+  llm-proxy-network:
+    driver: bridge
